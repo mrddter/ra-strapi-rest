@@ -3,15 +3,28 @@
 
 # Usage
 Save the **index.js** file as ra-strapi-rest.js and import it in your react-admin project. No need to npm install another dependency :)
+
 ```js
-import React from 'react';
-import { fetchUtils, Admin, Resource } from 'react-admin';
+// App.js
 import simpleRestProvider from './ra-strapi-rest';
 ```
 
-# IMPORTANT! Strapi Content-Range Header Setup
+If you prefer to add this to node modules, go ahead and run the following command
+```
+npm install ra-strapi-rest
+```
+or
+```
+yarn add ra-strapi-rest
+```
+
+Then import it in your `App.js` as usual
+```js
+import simpleRestProvider from 'ra-strapi-rest';
+```
+
+# IMPORTANT!
 1. Make sure CORS is enabled in Strapi project
-2. Add Content-Range to expose headers object
 *<your_project>/config/environments/development/security.js*
 ```
 {
@@ -19,42 +32,13 @@ import simpleRestProvider from './ra-strapi-rest';
 "cors": {
     "enabled": true,
     "origin": "*",
-    "expose": [
-      "WWW-Authenticate",
-      "Server-Authorization",
-      "Content-Range" // <<--- HERE
-    ],
     ...
   },
   ...
 }
 ```
-3. In controllers, you need to set the `Content-Range` header with the total number of results to build the pagination
-```js
-...
-find: async (ctx) => {
-  ctx.set('Content-Range', await strapi.services.<Model_Name>.count());
-  if (ctx.query._q) {
-    return strapi.services.<Model_Name>.search(ctx.query);
-  } else {
-    return strapi.services.<Model_Name>.find(ctx.query);
-  }
-},
-...
-```
-Example:
-```js
-...
-find: async (ctx) => {
-  ctx.set('Content-Range', await strapi.services.Post.count());
-  if (ctx.query._q) {
-    return strapi.services.post.search(ctx.query);
-  } else {
-    return strapi.services.post.find(ctx.query);
-  }
-},
-...
-```
+2. Check your user permissions. Find and count is required for listing entries
+
 # Example
 
 ```js
@@ -98,6 +82,7 @@ import React from 'react';
 import { fetchUtils, Admin, Resource } from 'react-admin';
 import simpleRestProvider from './ra-strapi-rest';
 import authProvider from './authProvider'
+import Cookies from './helpers/Cookies';
 
 import { PostList } from './posts';
 
@@ -105,7 +90,7 @@ const httpClient = (url, options = {}) => {
     if (!options.headers) {
         options.headers = new Headers({ Accept: 'application/json' });
     }
-    const token = localStorage.getItem('token');
+    const token = Cookies.getCookie('token')
     options.headers.set('Authorization', `Bearer ${token}`);
     return fetchUtils.fetchJson(url, options);
 }
@@ -133,43 +118,20 @@ Strapi User-permission plugin expects you to send username and password in the f
 ```
 So in your front end form, the name for the username input should be **identifier**
 
-However, an easier fix is to modify the Auth.js file
-To do that, in your project folder, go to **plugins/user-permissions/controllers/Auth.js**
-Then add the following line:
-```js
-params.identifier = params.identifier ? params.identifier : params.username;
-```
-above this **if** statement
-```js
-if (!params.identifier) {
-    return ctx.badRequest(null, ctx.request.admin ? [{ messages: [{ id: 'Auth.form.error.email.provide' }] }] : 'Please provide your username or your e-mail.');
-}
-```
-
-So it should look like this:
-```js
-...
-// The identifier is required.
-params.identifier = params.identifier ? params.identifier : params.username;
-if (!params.identifier) {
-return ctx.badRequest(null, ctx.request.admin ? [{ messages: [{ id: 'Auth.form.error.email.provide' }] }] : 'Please provide your username or your e-mail.');
-}
-...
-```
-
 # Example of a working authProvider.js
+
 ```js
 // authProvider.js
 
-import { AUTH_LOGIN, AUTH_LOGOUT, AUTH_ERROR, AUTH_CHECK, AUTH_GET_PERMISSIONS } from 'react-admin';
-import Cookies from './helpers/Cookies';
+import Cookies from './helpers/Cookies'
 
-export default (type, params) => {
-    if (type === AUTH_LOGIN) {
-        const { username, password } = params;
+export default {
+
+    login: ({ username, password }) => {
+        const identifier = username // strapi expects 'identifier' and not 'username'
         const request = new Request('http://localhost:1337/auth/local', {
             method: 'POST',
-            body: JSON.stringify({ username, password }),
+            body: JSON.stringify({ identifier, password }),
             headers: new Headers({ 'Content-Type': 'application/json'})
         });
         return fetch(request)
@@ -183,33 +145,31 @@ export default (type, params) => {
                 Cookies.setCookie('token', response.jwt, 1);
                 Cookies.setCookie('role', response.user.role.name, 1);
             });
-    }
+    },
 
-    if (type === AUTH_LOGOUT) {
+    logout: () => {
         Cookies.deleteCookie('token');
         Cookies.deleteCookie('role');
         return Promise.resolve();
-    }
+    },
 
-    if (type === AUTH_ERROR) {
-        const status  = params.status;
+    checkAuth: () => {
+        return Cookies.getCookie('token') ? Promise.resolve() : Promise.reject();
+    },
+
+    checkError: ({ status }) => {
         if (status === 401 || status === 403) {
             Cookies.deleteCookie('token');
             Cookies.deleteCookie('role');
             return Promise.reject();
         }
         return Promise.resolve();
-    }
+    },
 
-    if (type === AUTH_CHECK) {
-        return Cookies.getCookie('token') ? Promise.resolve() : Promise.reject();
-    }
-
-    if (type === AUTH_GET_PERMISSIONS) {
+    getPermissions: () => {
         const role = Cookies.getCookie('role');
         return role ? Promise.resolve(role) : Promise.reject();
-    }
-    return Promise.resolve();
+    },
 }
 
 // ====================
@@ -235,3 +195,91 @@ const Cookies = {
 export default Cookies;
 ```
 Using cookies instead of localStorage because localStorage does not play well with private browsing
+
+# File Upload
+
+In order to use `ImageInput` or `FileInput` features of the React-Admin, you need to provide the names of the upload fields to the data provider.
+
+Steps
+1. Get the latest version of the index.js from the repo
+2. In `App.js` add a new array `uploadFields` and add the fields that are handling file upload for your resources. 
+
+For example, say you have this `post` model
+```json
+// <strapi_project>/api/post/models/post.settings.json
+...
+    "images": {
+      "collection": "file",
+      "via": "related",
+      "plugin": "upload"
+    },
+    "files": {
+      "collection": "file",
+      "via": "related",
+      "plugin": "upload"
+    },
+    "avatar": {
+      "model": "file",
+      "via": "related",
+      "plugin": "upload"
+    }
+...
+```
+
+And this Create component for `posts` in React-Admin. (Edit component would be similar)
+
+```js
+export const PostCreate = props => (
+   <Create title="Posts" {...props}>
+      <SimpleForm>
+         <TextInput source="title" />
+	 <TextInput source="body" />
+	 <BooleanInput source="published" />
+	 <ImageInput
+	     multiple={true}
+   	     source="images"
+	     label="Related pictures"
+	     accept="image/*"
+	 >
+	     <ImageField source="url" title="name" />
+	 </ImageInput>
+	 <ImageInput source="avatar" label="Avatar" accept="image/*">
+             <ImageField source="url" title="name" />
+	 </ImageInput>
+	 <FileInput source="files" label="Related files" multiple={true}>
+             <FileField source="url" title="name" />
+	 </FileInput>
+      </SimpleForm>
+   </Create>
+);
+```
+Then there are 3 fields that require file upload feature - _images_, _files_, and _avatar_.
+
+So we need to pass those field names to the data provider.
+```js
+// App.js
+...
+const  uploadFields = ["images", "files", "avatar"];
+const  dataProvider = simpleRestProvider(baseUrl, httpClient, uploadFields);
+...
+```
+If the same name exists for multiple resources, **just mention it once**. Data provider will take care of the rest. 
+
+**NOTE**: Do not pass the resource names, only the field names inside the resources.
+
+Example of Show component for image/file fields mentioned above
+
+```js
+export const PostShow = props => (
+    <Show {...props}>
+	<SimpleShowLayout>
+	    <TextField source="title" />
+	    <TextField source="body" />
+	    <BooleanField source="published" />
+	    <ImageField source="images" src="url"/>
+	    <ImageField source="avatar.url" label="Avatar" />
+	    <FileField source="files" src="url" title="name" target="_blank" />
+	</SimpleShowLayout>
+    </Show>
+);
+```
